@@ -67,7 +67,7 @@
   </header>
   <div id="main">
     <div id="map" style="position:relative;">
-      <div class="banner" id="banner">⚠️ デモデータ表示中（架空の診療所）— シート接続で実データに切替</div>
+      <div class="banner" id="banner">⏳ データ取得中…</div>
     </div>
     <div id="panel">
       <div id="filters"></div>
@@ -210,24 +210,36 @@ function parseCSV(text) {
   return out.filter(r => r.length > 1 && r.some(x => x.trim() !== ""));
 }
 
+function setBanner(text, show) {
+  const b = document.getElementById("banner");
+  b.textContent = text;
+  b.style.display = show ? "" : "none";
+}
+
 async function load() {
   if (!SHEET_CSV_URL) {
     rows = DEMO;
+    setBanner("⚠️ デモデータ表示中（架空の診療所）— シート接続で実データに切替", true);
     document.getElementById("updated").textContent = "デモモード";
     render();
     return;
   }
   try {
     const res = await fetch(SHEET_CSV_URL + (SHEET_CSV_URL.includes("?") ? "&" : "?") + "t=" + Date.now());
+    if (!res.ok) throw new Error("HTTP " + res.status);
     const csv = await res.text();
     const parsed = parseCSV(csv);
+    if (!parsed.length || !parsed[0].join(",").includes("機関名")) throw new Error("CSV形式でない応答");
     rows = parsed.slice(1); // 1行目はヘッダ
-    document.getElementById("banner").style.display = "none";
+    setBanner("", false);
     document.getElementById("updated").textContent =
       "最終取得: " + new Date().toLocaleTimeString("ja-JP");
     render();
   } catch (e) {
-    document.getElementById("updated").textContent = "⚠️ シート取得失敗: " + e.message;
+    // 失敗時は前回データを保持したまま、状態だけ正しく表示（60秒ごとに自動再試行）
+    setBanner("⚠️ データ取得に失敗しました — 60秒ごとに自動再試行します" +
+      (location.protocol === "file" + ":" ? "（ローカルファイルからは取得できません。公開URLで開いてください）" : ""), true);
+    document.getElementById("updated").textContent = "取得エラー: " + e.message;
   }
 }
 
