@@ -149,7 +149,7 @@ function render() {
     if (typeFilter !== "すべて" && type !== typeFilter) return;
     const st = statusOf(r);
     counts[st]++;
-    if (isFinite(lat) && isFinite(lng)) {
+    if (String(lat).trim() !== "" && String(lng).trim() !== "" && isFinite(+lat) && isFinite(+lng)) {
       const mk = L.circleMarker([+lat, +lng], {
         radius: 9, color: "#fff", weight: 2, fillColor: STATUS[st].hex, fillOpacity: 0.95,
       }).addTo(map);
