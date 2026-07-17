@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>東灘区 医療機関 稼働状況マップ（プロトタイプ）</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --green: #2e9e5b; --yellow: #e6a817; --red: #d9432f; --gray: #9aa0a6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  header {
+    background: #1a3a5c; color: #fff; padding: 8px 14px;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .updated { font-size: 11px; opacity: .8; }
+  #counts { display: flex; gap: 8px; font-size: 12px; }
+  #counts span { padding: 2px 8px; border-radius: 10px; background: rgba(255,255,255,.15); }
+  #main { flex: 1; display: flex; min-height: 0; }
+  #map { flex: 1; }
+  #panel {
+    width: 300px; overflow-y: auto; border-left: 1px solid #ddd; background: #fafafa;
+  }
+  #panel .item {
+    padding: 8px 12px; border-bottom: 1px solid #eee; cursor: pointer; font-size: 13px;
+  }
+  #panel .item:hover { background: #eef4fb; }
+  #panel .item .name { font-weight: 600; }
+  #panel .item .meta { font-size: 11px; color: #666; margin-top: 2px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  #filters { padding: 8px 12px; border-bottom: 2px solid #ddd; background: #fff; font-size: 12px;
+    display: flex; gap: 6px; flex-wrap: wrap; }
+  #filters button {
+    border: 1px solid #ccc; background: #fff; border-radius: 12px; padding: 3px 10px;
+    font-size: 12px; cursor: pointer;
+  }
+  #filters button.on { background: #1a3a5c; color: #fff; border-color: #1a3a5c; }
+  .legend {
+    background: #fff; padding: 8px 10px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.3);
+    font-size: 12px; line-height: 1.8;
+  }
+  .banner {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000;
+    background: #fff3cd; border: 1px solid #e6a817; color: #6b5410; padding: 4px 14px;
+    border-radius: 14px; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.2);
+  }
+  .popup-name { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+  .popup-row { font-size: 12px; margin: 2px 0; }
+  .status-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; color: #fff; font-size: 11px; }
+  @media (max-width: 700px) {
+    #main { flex-direction: column; }
+    #panel { width: 100%; height: 38%; border-left: none; border-top: 1px solid #ddd; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>🏥 東灘区 医療機関 稼働状況マップ</h1>
+    <div id="counts"></div>
+    <div class="updated" id="updated"></div>
+  </header>
+  <div id="main">
+    <div id="map" style="position:relative;">
+      <div class="banner" id="banner">⚠️ デモデータ表示中（架空の診療所）— シート接続で実データに切替</div>
+    </div>
+    <div id="panel">
+      <div id="filters"></div>
+      <div id="list"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// 設定：Googleスプレッドシートを「ウェブに公開」したCSVのURLを
+// ここに貼ると実データモードになる。空ならデモデータを表示。
+// 例: https://docs.google.com/spreadsheets/d/e/2PACX-.../pub?gid=0&single=true&output=csv
+const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vROg9N7bsIInWqzB4Hjolffg7ytquKaVMsDd_B0JaDsCxmWj3lvTVLleQjvLCKq8Af2PrzyvUCCo5wM/pub?gid=650763468&single=true&output=csv";
+const REFRESH_SEC = 60; // 実データモード時の自動更新間隔（秒）
+// ============================================================
+
+// 期待するシート列（フォーム→整形シートの列順）:
+// 機関名, 種別, 住所, 緯度, 経度, 電話, 稼働状況, 建物被害, ライフライン, 備考, 更新日時
+// 稼働状況: 診療可 / 一部制限 / 診療不可 /（空欄=未回答）
+
+const STATUS = {
+  "診療可":   { color: "var(--green)",  hex: "#2e9e5b", label: "診療可" },
+  "一部制限": { color: "var(--yellow)", hex: "#e6a817", label: "一部制限" },
+  "診療不可": { color: "var(--red)",    hex: "#d9432f", label: "診療不可" },
+  "未回答":   { color: "var(--gray)",   hex: "#9aa0a6", label: "未回答(状況不明)" },
+};
+
+// デモデータ（すべて架空。座標は東灘区周辺に散らしたダミー）
+const DEMO = [
+  ["デモ内科クリニックA", "医科", "東灘区住吉本町（ダミー）", 34.7215, 135.2601, "078-000-0001", "診療可", "なし", "電気○ 水道○", "", "07/16 08:30"],
+  ["デモ脳神経クリニックB", "医科", "東灘区岡本（ダミー）", 34.7268, 135.2672, "078-000-0002", "診療可", "軽微", "電気○ 水道○", "CT稼働中", "07/16 08:45"],
+  ["デモ整形外科C", "医科", "東灘区御影（ダミー）", 34.7180, 135.2495, "078-000-0003", "一部制限", "一部損壊", "電気○ 水道×", "外来のみ・処置制限あり", "07/16 09:10"],
+  ["デモ小児科D", "医科", "東灘区本山南町（ダミー）", 34.7168, 135.2740, "078-000-0004", "診療不可", "半壊", "電気× 水道×", "スタッフ安否確認中", "07/16 07:50"],
+  ["デモ歯科E", "歯科", "東灘区住吉宮町（ダミー）", 34.7192, 135.2635, "078-000-0005", "診療可", "なし", "電気○ 水道○", "", "07/16 08:20"],
+  ["デモ歯科F", "歯科", "東灘区深江北町（ダミー）", 34.7205, 135.2860, "078-000-0006", "未回答", "", "", "", ""],
+  ["デモ薬局G", "薬局", "東灘区田中町（ダミー）", 34.7230, 135.2705, "078-000-0007", "診療可", "なし", "電気○ 水道○", "在庫十分", "07/16 08:55"],
+  ["デモ薬局H", "薬局", "東灘区魚崎北町（ダミー）", 34.7145, 135.2668, "078-000-0008", "一部制限", "なし", "電気○ 水道○", "スタッフ2名のみ", "07/16 09:00"],
+  ["デモ内科I", "医科", "東灘区森北町（ダミー）", 34.7290, 135.2790, "078-000-0009", "未回答", "", "", "", ""],
+  ["デモ外科J", "医科", "東灘区青木（ダミー）", 34.7135, 135.2810, "078-000-0010", "診療不可", "全壊", "電気× 水道×", "近隣救護所へ誘導", "07/16 07:30"],
+];
+
+const map = L.map("map", {
+  preferCanvas: true,        // マーカーをCanvas描画（環境によるSVG合成不具合の回避）
+  fadeAnimation: false,      // タイルのフェードが固まる環境があるため無効化
+  zoomAnimation: false,
+  markerZoomAnimation: false,
+}).setView([34.720, 135.268], 14);
+L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png", {
+  attribution: "地理院タイル（淡色地図）", maxZoom: 18,
+}).addTo(map);
+
+// 凡例
+const legend = L.control({ position: "bottomleft" });
+legend.onAdd = () => {
+  const div = L.DomUtil.create("div", "legend");
+  div.innerHTML = Object.values(STATUS).map(s =>
+    `<span class="dot" style="background:${s.hex}"></span>${s.label}`
+  ).join("<br>");
+  return div;
+};
+legend.addTo(map);
+
+let markers = [];
+let rows = [];
+let typeFilter = "すべて";
+
+function statusOf(r) { return STATUS[r[6]] ? r[6] : "未回答"; }
+
+function render() {
+  markers.forEach(m => map.removeLayer(m));
+  markers = [];
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  const counts = { "診療可": 0, "一部制限": 0, "診療不可": 0, "未回答": 0 };
+
+  rows.forEach(r => {
+    const [name, type, addr, lat, lng, tel, , damage, lifeline, note, updated] = r;
+    if (typeFilter !== "すべて" && type !== typeFilter) return;
+    const st = statusOf(r);
+    counts[st]++;
+    if (isFinite(lat) && isFinite(lng)) {
+      const mk = L.circleMarker([+lat, +lng], {
+        radius: 9, color: "#fff", weight: 2, fillColor: STATUS[st].hex, fillOpacity: 0.95,
+      }).addTo(map);
+      mk.bindPopup(`
+        <div class="popup-name">${name}</div>
+        <div class="popup-row"><span class="status-badge" style="background:${STATUS[st].hex}">${st}</span> <b>${type}</b></div>
+        <div class="popup-row">📍 ${addr || ""}</div>
+        <div class="popup-row">📞 ${tel || "-"}</div>
+        <div class="popup-row">🏚 建物被害: ${damage || "-"} ／ ライフライン: ${lifeline || "-"}</div>
+        ${note ? `<div class="popup-row">📝 ${note}</div>` : ""}
+        <div class="popup-row" style="color:#888">更新: ${updated || "未報告"}</div>
+      `);
+      markers.push(mk);
+      const item = document.createElement("div");
+      item.className = "item";
+      item.innerHTML = `<div class="name"><span class="dot" style="background:${STATUS[st].hex}"></span>${name}</div>
+        <div class="meta">${type} ｜ ${st} ｜ 更新: ${updated || "未報告"}</div>`;
+      item.onclick = () => { map.setView([+lat, +lng], 16); mk.openPopup(); };
+      list.appendChild(item);
+    }
+  });
+
+  document.getElementById("counts").innerHTML =
+    `<span>🟢 ${counts["診療可"]}</span><span>🟡 ${counts["一部制限"]}</span>` +
+    `<span>🔴 ${counts["診療不可"]}</span><span>⚪ ${counts["未回答"]}</span>`;
+}
+
+function renderFilters() {
+  const kinds = ["すべて", "医科", "歯科", "薬局"];
+  const el = document.getElementById("filters");
+  el.innerHTML = "";
+  kinds.forEach(k => {
+    const b = document.createElement("button");
+    b.textContent = k;
+    b.className = k === typeFilter ? "on" : "";
+    b.onclick = () => { typeFilter = k; renderFilters(); render(); };
+    el.appendChild(b);
+  });
+}
+
+// 簡易CSVパーサ（ダブルクォート対応）
+function parseCSV(text) {
+  const out = []; let row = [], cur = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i+1] === '"') { cur += '"'; i++; }
+      else if (c === '"') q = false;
+      else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ",") { row.push(cur); cur = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i+1] === "\n") i++;
+      row.push(cur); out.push(row); row = []; cur = "";
+    } else cur += c;
+  }
+  if (cur !== "" || row.length) { row.push(cur); out.push(row); }
+  return out.filter(r => r.length > 1 && r.some(x => x.trim() !== ""));
+}
+
+async function load() {
+  if (!SHEET_CSV_URL) {
+    rows = DEMO;
+    document.getElementById("updated").textContent = "デモモード";
+    render();
+    return;
+  }
+  try {
+    const res = await fetch(SHEET_CSV_URL + (SHEET_CSV_URL.includes("?") ? "&" : "?") + "t=" + Date.now());
+    const csv = await res.text();
+    const parsed = parseCSV(csv);
+    rows = parsed.slice(1); // 1行目はヘッダ
+    document.getElementById("banner").style.display = "none";
+    document.getElementById("updated").textContent =
+      "最終取得: " + new Date().toLocaleTimeString("ja-JP");
+    render();
+  } catch (e) {
+    document.getElementById("updated").textContent = "⚠️ シート取得失敗: " + e.message;
+  }
+}
+
+renderFilters();
+load();
+// flexレイアウト内でLeafletが初期サイズを誤認するのを防ぐ
+window.addEventListener("load", () => setTimeout(() => map.invalidateSize(), 100));
+new ResizeObserver(() => map.invalidateSize()).observe(document.getElementById("map"));
+if (SHEET_CSV_URL) setInterval(load, REFRESH_SEC * 1000);
+</script>
+</body>
+</html>
