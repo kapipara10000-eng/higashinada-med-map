@@ -134,6 +134,7 @@ legend.addTo(map);
 let markers = [];
 let rows = [];
 let typeFilter = "すべて";
+let didFitBounds = false; // 初回読み込み時に全ピンが収まるよう表示範囲を自動調整
 
 function statusOf(r) { return STATUS[r[6]] ? r[6] : "未回答"; }
 
@@ -182,6 +183,13 @@ function render() {
   document.getElementById("counts").innerHTML =
     `<span>🟢 ${counts["診療可"]}</span><span>🟡 ${counts["一部制限"]}</span>` +
     `<span>🔴 ${counts["診療不可"]}</span><span>⚪ ${counts["未回答"]}</span>`;
+
+  // 初回のみ、全ピン（六甲アイランドの救護所含む）が収まる範囲へ自動ズーム
+  if (!didFitBounds && markers.length) {
+    const pts = markers.map(m => m.getLatLng());
+    map.fitBounds(L.latLngBounds(pts).pad(0.12));
+    didFitBounds = true;
+  }
 }
 
 function renderFilters() {
