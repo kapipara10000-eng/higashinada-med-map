@@ -126,7 +126,7 @@ legend.onAdd = () => {
   const div = L.DomUtil.create("div", "legend");
   div.innerHTML = Object.values(STATUS).map(s =>
     `<span class="dot" style="background:${s.hex}"></span>${s.label}`
-  ).join("<br>");
+  ).join("<br>") + '<br><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid #555;margin-right:6px;"></span>大きい二重丸＝救護所';
   return div;
 };
 legend.addTo(map);
@@ -150,8 +150,15 @@ function render() {
     const st = statusOf(r);
     counts[st]++;
     if (String(lat).trim() !== "" && String(lng).trim() !== "" && isFinite(+lat) && isFinite(+lng)) {
+      const isAid = type === "救護所";
+      if (isAid) {
+        // 救護所は外側リング付きの大きい二重丸で強調
+        markers.push(L.circleMarker([+lat, +lng], {
+          radius: 17, fill: false, color: STATUS[st].hex, weight: 2.5,
+        }).addTo(map));
+      }
       const mk = L.circleMarker([+lat, +lng], {
-        radius: 9, color: "#fff", weight: 2, fillColor: STATUS[st].hex, fillOpacity: 0.95,
+        radius: isAid ? 12 : 9, color: "#fff", weight: 2, fillColor: STATUS[st].hex, fillOpacity: 0.95,
       }).addTo(map);
       mk.bindPopup(`
         <div class="popup-name">${name}</div>
@@ -165,7 +172,7 @@ function render() {
       markers.push(mk);
       const item = document.createElement("div");
       item.className = "item";
-      item.innerHTML = `<div class="name"><span class="dot" style="background:${STATUS[st].hex}"></span>${name}</div>
+      item.innerHTML = `<div class="name"><span class="dot" style="background:${STATUS[st].hex}"></span>${type === "救護所" ? "◎ " : ""}${name}</div>
         <div class="meta">${type} ｜ ${st} ｜ 更新: ${updated || "未報告"}</div>`;
       item.onclick = () => { map.setView([+lat, +lng], 16); mk.openPopup(); };
       list.appendChild(item);
@@ -178,7 +185,7 @@ function render() {
 }
 
 function renderFilters() {
-  const kinds = ["すべて", "医科", "歯科", "薬局"];
+  const kinds = ["すべて", "医科", "歯科", "薬局", "救護所"];
   const el = document.getElementById("filters");
   el.innerHTML = "";
   kinds.forEach(k => {
